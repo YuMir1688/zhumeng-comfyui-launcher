@@ -101,6 +101,7 @@ $expectedChecksumRelativePaths = @(
     "tools\ComfyUI-Launcher.Services.psm1",
     "tools\ComfyUI-Core-Updater.ps1",
     "tools\ComfyUI-Extension-Worker.ps1",
+    "tools\Update-Launcher.ps1",
     "tools\bundled-custom-nodes.json",
     "tools\launcher-version.json",
     "tools\PortableEntrypointLauncher.cs",
