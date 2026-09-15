@@ -5,6 +5,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Network failures and WPF callbacks
+        shell: powershell
+        run: ./Test-NetworkFailures.ps1
       - name: Core updater regression tests
         shell: powershell
         run: ./launcher/tools/ComfyUI-Core-Updater.ps1 -SelfTest

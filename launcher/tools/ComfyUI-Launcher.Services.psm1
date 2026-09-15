@@ -365,19 +365,19 @@ function ConvertTo-LauncherNetworkError {
     }
 
     $exception = $ErrorObject
-    if ($ErrorObject -is [System.AggregateException]) {
-        $exception = $ErrorObject.GetBaseException()
+    # Exception instances do not have an Exception property. Job errors and
+    # ErrorRecords may wrap one; use safe property access under StrictMode.
+    $wrapped = Get-LauncherPropertyValue $exception 'Exception'
+    if ($null -ne $wrapped) {
+        $exception = $wrapped
     }
-    elseif ($null -ne $ErrorObject.Exception) {
-        $exception = $ErrorObject.Exception
-        if ($exception -is [System.AggregateException]) {
-            $exception = $exception.GetBaseException()
-        }
+    if ($exception -is [System.Exception]) {
+        $exception = $exception.GetBaseException()
     }
 
-    $message = [string]$exception.Message
+    $message = [string](Get-LauncherPropertyValue $exception 'Message' ([string]$exception))
     $lower = $message.ToLowerInvariant()
-    if ($exception -is [System.Threading.Tasks.TaskCanceledException] -or $lower -match "timed out|timeout|超时") {
+    if ($exception -is [System.OperationCanceledException] -or $lower -match "timed out|timeout|超时") {
         return "请求超时"
     }
     if ($lower -match "name resolution|no such host|resolve|dns|找不到.*主机") {

@@ -1,4 +1,4 @@
-﻿param([string]$Version = '1.3.2')
+﻿param([string]$Version = '1.3.3')
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 $source = Join-Path $repo 'launcher'
