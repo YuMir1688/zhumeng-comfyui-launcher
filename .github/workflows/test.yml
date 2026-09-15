@@ -10,7 +10,9 @@ jobs:
         run: ./Test-NetworkFailures.ps1
       - name: Core updater regression tests
         shell: powershell
-        run: ./launcher/tools/ComfyUI-Core-Updater.ps1 -SelfTest
+        run: |
+          ./Test-CoreHash.ps1
+          ./launcher/tools/ComfyUI-Core-Updater.ps1 -SelfTest
       - name: Build patch
         shell: powershell
         run: ./Build-Patch.ps1

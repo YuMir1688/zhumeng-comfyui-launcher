@@ -18,6 +18,25 @@ $script:downloadSourceUrl = ""
 $script:rollbackPerformed = $false
 $script:destructiveMaintenanceEnabled = $true
 
+# Jobs may inherit a module search path without Microsoft.PowerShell.Utility.
+# Keep checksum verification independent of cmdlet discovery; never skip it.
+function Get-FileHash {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [ValidateSet('SHA256')][string]$Algorithm = 'SHA256'
+    )
+    $stream = [System.IO.File]::OpenRead($LiteralPath)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '')
+        return [pscustomobject]@{ Algorithm = $Algorithm; Hash = $hash; Path = $LiteralPath }
+    }
+    finally {
+        $hasher.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Get-CoreDirectoryNames {
     return @(
         "alembic_db",
