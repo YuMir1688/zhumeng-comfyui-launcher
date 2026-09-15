@@ -6,7 +6,7 @@
 
 ## 已有 1.3.0 包怎么升级
 
-1. 在 [Releases](https://github.com/YuMir1688/zhumeng-comfyui-launcher/releases) 下载 `zhumeng-first-update-1.3.1.zip`。
+1. 在 [Releases](https://github.com/YuMir1688/zhumeng-comfyui-launcher/releases) 下载 `zhumeng-first-update-1.3.2.zip`。
 2. 关闭 ComfyUI 和启动器，将补丁解压到原整合包根目录，与 `启动_ComfyUI.exe` 放在一起。
 3. 双击 `Install-Launcher-Update.cmd`，完成后重新打开启动器。
 4. 进入维护中心 → 版本更新 → **检查启动器更新**。之后可在线下载启动器补丁，无需重传整合包。
@@ -20,7 +20,7 @@
 
 启动器补丁有整包及逐文件 SHA-256 校验、路径检查、安装备份和失败恢复。备份在 `.cache/launcher-backup-*`。
 
-## 1.3.1 修复
+## 1.3.2 修复
 
 - 修复 `av>=16.0.0` 等范围依赖被误当成不可回滚版本的问题。
 - 从已安装环境获取精确回滚版本。实际版本满足新版要求时无需重装 av。
@@ -29,6 +29,7 @@
 - 回滚失败时保留核心更新的离线恢复材料。
 - 增加启动器在线更新入口和启动时版本提示。
 - 修复日志导出选择文件夹时的错误处理。
+- 修正 EXE 文件版本与界面版本不一致，并在构建和安装时验证版本一致性。1.3.1 为被替代的预发布版本。
 
 ## 兼容范围与验证边界
 

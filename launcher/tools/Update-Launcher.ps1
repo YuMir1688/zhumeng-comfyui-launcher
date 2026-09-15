@@ -64,7 +64,7 @@ function Download-File([string]$Url, [string]$Destination) {
         }
         $client = New-Object Net.Http.HttpClient($handler)
         $client.Timeout = [TimeSpan]::FromSeconds(90)
-        $client.DefaultRequestHeaders.UserAgent.ParseAdd('ZhumengLauncher/1.3.1')
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('ZhumengLauncher/1.3.2')
         try {
             $task = $client.GetByteArrayAsync($candidate)
             while (-not $task.IsCompleted) {
@@ -149,6 +149,7 @@ try {
     if (-not $seen.Contains('tools/launcher-version.json')) { throw '补丁缺少版本文件' }
     $newVersion = [IO.File]::ReadAllText((Join-Path $payload 'tools/launcher-version.json')) | ConvertFrom-Json
     if ($newVersion.version -ne $manifest.version) { throw '补丁版本不一致' }
+    if ($seen.Contains('启动_ComfyUI.exe') -and [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $payload '启动_ComfyUI.exe')).FileVersion -ne ($manifest.version + '.0')) { throw 'EXE 文件版本与补丁版本不一致' }
     if ($LauncherPid -gt 0 -and (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue)) {
         if (-not (Confirm-Update '补丁已下载并通过校验。请关闭 ComfyUI 主启动器，然后点击确定安装。')) { exit 0 }
         if (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) { throw '主启动器仍在运行，请先关闭后重试。' }

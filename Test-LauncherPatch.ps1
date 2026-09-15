@@ -2,7 +2,8 @@
 $ErrorActionPreference='Stop'
 $base=Join-Path $PSScriptRoot ('test-artifacts/patch-' + [Guid]::NewGuid().ToString('N'))
 $utf8=New-Object Text.UTF8Encoding($false)
-$archive=Join-Path $PSScriptRoot 'dist/zhumeng-launcher-1.3.1.zip'
+$expectedVersion=([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'launcher/tools/launcher-version.json'))|ConvertFrom-Json).version
+$archive=Join-Path $PSScriptRoot "dist/zhumeng-launcher-$expectedVersion.zip"
 $manifest=Join-Path $PSScriptRoot 'dist/launcher-update.json'
 $updater=Join-Path $PSScriptRoot 'launcher/tools/Update-Launcher.ps1'
 function New-Fixture([string]$Name) {
@@ -18,7 +19,7 @@ $normal=New-Fixture '中文 路径成功'
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $updater -Root $normal -LocalArchive $archive -LocalManifest $manifest -NonInteractive
 if($LASTEXITCODE -ne 0){throw 'Patch installation failed'}
 $version=[IO.File]::ReadAllText((Join-Path $normal 'tools/launcher-version.json'))|ConvertFrom-Json
-if($version.version -ne '1.3.1'){throw 'Version was not updated'}
+if($version.version -ne $expectedVersion){throw 'Version was not updated'}
 $failed=New-Fixture '锁定文件回滚'
 $lockedPath=Join-Path $failed 'tools/ComfyUI-Launcher.xaml'
 $locked=[IO.File]::Open($lockedPath,'Open','Read','Read')

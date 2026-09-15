@@ -1,4 +1,4 @@
-﻿param([string]$Version = '1.3.1')
+﻿param([string]$Version = '1.3.2')
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 $source = Join-Path $repo 'launcher'
@@ -8,11 +8,13 @@ $dist = Join-Path $repo 'dist'
 $stage = Join-Path $dist ('stage-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($stage)
 & (Join-Path $source 'tools/Build-PortableLauncher.ps1') -Root $source
+if ([Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $source '启动_ComfyUI.exe')).FileVersion -ne ($Version + '.0')) { throw 'Executable version does not match launcher-version.json' }
 $paths = @(
     '启动_ComfyUI.exe', 'tools/ComfyUI-Launcher.ps1', 'tools/ComfyUI-Launcher.xaml',
     'tools/ComfyUI-Launcher.Services.psm1', 'tools/ComfyUI-Core-Updater.ps1',
     'tools/ComfyUI-Extension-Worker.ps1', 'tools/Update-Launcher.ps1',
     'tools/launcher-version.json'
+    'tools/PortableLauncher.cs'
 )
 $files = foreach ($relative in $paths) {
     $path = Join-Path $source $relative
@@ -47,7 +49,7 @@ $bootstrap = Join-Path $dist ('bootstrap-' + [Guid]::NewGuid().ToString('N'))
 foreach ($name in @("zhumeng-launcher-$Version.zip", 'launcher-update.json', 'Update-Launcher.ps1')) {
     [IO.File]::Copy((Join-Path $dist $name),(Join-Path $bootstrap $name))
 }
-[IO.File]::WriteAllText((Join-Path $bootstrap 'Install-Launcher-Update.cmd'), [IO.File]::ReadAllText((Join-Path $repo 'Install-Launcher-Update.cmd')).Replace('1.3.1',$Version), [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText((Join-Path $bootstrap 'Install-Launcher-Update.cmd'), ([IO.File]::ReadAllText((Join-Path $repo 'Install-Launcher-Update.cmd')) -replace 'zhumeng-launcher-\d+\.\d+\.\d+\.zip',"zhumeng-launcher-$Version.zip"), [Text.Encoding]::ASCII)
 $bootstrapZip = Join-Path $dist "zhumeng-first-update-$Version.zip"
 if (Test-Path -LiteralPath $bootstrapZip) { throw "Output already exists: $bootstrapZip" }
 [IO.Compression.ZipFile]::CreateFromDirectory($bootstrap,$bootstrapZip)
