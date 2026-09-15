@@ -13,6 +13,10 @@
 
 首次补丁包含离线安装材料。不要把源码 ZIP 当作升级补丁，也不要安装到模型目录。
 
+## 1.3.4 同步修复
+
+当前补丁是 1.3.4，包含网络异常闪退和核心更新 Get-FileHash 不可用修复。旧版使用 Release 中的 `zhumeng-first-update-1.3.4.zip`，解压至整合包根目录运行 `Install-Launcher-Update.cmd`。本版本只更新启动器与维护脚本。
+
 ## 1.3.3 紧急修复
 
 修复 1.3.2 网络失败导致整个启动器退出的问题。旧版无法保持打开时，请使用 Release 中的 `zhumeng-first-update-1.3.3.zip`，解压到原包根目录运行 `Install-Launcher-Update.cmd`。详见 [1.3.3 验证记录](docs/validation-1.3.3.md)。

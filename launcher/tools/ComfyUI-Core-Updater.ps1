@@ -928,6 +928,7 @@ function Invoke-CapturedProcess {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.RedirectStandardInput = $true
     foreach ($name in $Environment.Keys) {
         $value = $Environment[$name]
         if ($null -eq $value) {
@@ -941,6 +942,9 @@ function Invoke-CapturedProcess {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
     [void]$process.Start()
+    # Background PowerShell jobs have a remoting input handle. Inheriting it
+    # can hang Python before execution. These maintenance commands are noninteractive.
+    $process.StandardInput.Close()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()

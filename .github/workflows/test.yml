@@ -12,6 +12,7 @@ jobs:
         shell: powershell
         run: |
           ./Test-CoreHash.ps1
+          ./Test-BackgroundPython.ps1
           ./launcher/tools/ComfyUI-Core-Updater.ps1 -SelfTest
       - name: Build patch
         shell: powershell

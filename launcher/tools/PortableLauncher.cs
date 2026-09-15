@@ -9,8 +9,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("Portable ComfyUI desktop launcher")]
 [assembly: AssemblyCompany("ComfyUI Desktop Package")]
 [assembly: AssemblyProduct("ComfyUI 桌面版")]
-[assembly: AssemblyVersion("1.3.3.0")]
-[assembly: AssemblyFileVersion("1.3.3.0")]
+[assembly: AssemblyVersion("1.3.4.0")]
+[assembly: AssemblyFileVersion("1.3.4.0")]
 
 internal static class PortableLauncher
 {

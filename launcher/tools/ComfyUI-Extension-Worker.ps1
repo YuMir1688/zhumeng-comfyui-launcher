@@ -1755,6 +1755,7 @@ function Invoke-CapturedProcess {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.RedirectStandardInput = $true
     foreach ($key in $Environment.Keys) {
         if ($null -eq $Environment[$key]) {
             [void]$startInfo.EnvironmentVariables.Remove([string]$key)
@@ -1766,6 +1767,7 @@ function Invoke-CapturedProcess {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
     [void]$process.Start()
+    $process.StandardInput.Close()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
