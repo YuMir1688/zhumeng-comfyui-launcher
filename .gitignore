@@ -1,0 +1,9 @@
+/hero-*.png
+/update-test-request.json
+/dist/
+/test-artifacts/
+**/__pycache__/
+*.pyc
+*.log
+launcher/启动_ComfyUI.exe
+launcher/tools/*.exe

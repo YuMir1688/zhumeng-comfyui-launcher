@@ -1,0 +1,16 @@
+name: Windows launcher checks
+on: [push, pull_request]
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core updater regression tests
+        shell: powershell
+        run: ./launcher/tools/ComfyUI-Core-Updater.ps1 -SelfTest
+      - name: Build patch
+        shell: powershell
+        run: ./Build-Patch.ps1
+      - name: Patch install and rollback tests
+        shell: powershell
+        run: ./Test-LauncherPatch.ps1
