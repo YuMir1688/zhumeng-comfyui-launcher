@@ -16,10 +16,20 @@ function New-Fixture([string]$Name) {
     return $path
 }
 $normal=New-Fixture '中文 路径成功'
+$protectedFiles=@('models/keep.bin','custom_nodes/keep.py','user/workflows/keep.json','input/keep.png','output/keep.png','main.py')
+foreach($relative in $protectedFiles) {
+    $path=Join-Path $normal $relative
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
+    [IO.File]::WriteAllText($path,'protected fixture contents',$utf8)
+}
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $updater -Root $normal -LocalArchive $archive -LocalManifest $manifest -NonInteractive
 if($LASTEXITCODE -ne 0){throw 'Patch installation failed'}
 $version=[IO.File]::ReadAllText((Join-Path $normal 'tools/launcher-version.json'))|ConvertFrom-Json
 if($version.version -ne $expectedVersion){throw 'Version was not updated'}
+foreach($relative in $protectedFiles) {
+    if([IO.File]::ReadAllText((Join-Path $normal $relative)) -ne 'protected fixture contents'){throw "Protected data changed: $relative"}
+}
+if(-not (Test-Path -LiteralPath (Join-Path $normal 'tools/ComfyUI-Runtime.py'))){throw 'Runtime bootstrap missing from patch'}
 $failed=New-Fixture '锁定文件回滚'
 $lockedPath=Join-Path $failed 'tools/ComfyUI-Launcher.xaml'
 $locked=[IO.File]::Open($lockedPath,'Open','Read','Read')

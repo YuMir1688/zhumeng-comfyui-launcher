@@ -192,6 +192,7 @@ $controlNames = @(
     "WorkflowShowcaseDot4", "WorkflowShowcaseCounter", "BtnWorkflowPrev", "BtnWorkflowNext",
     "BtnAdvancedStart", "BtnCleanTemp", "BtnConsoleOpenWeb", "BtnExportRunLog",
     "PresetCombo", "PortBox", "AutoBrowserCheck", "AutoTempCleanCheck",
+    "BrowserPathText", "BtnChooseBrowser", "BtnDefaultBrowser",
     "EffectiveNetworkHeaderText", "BtnNetworkTab", "BtnUpdateTab",
     "BtnExtensionsTab", "BtnInstallExtensionTab",
     "NetworkPanel", "UpdatePanel", "ExtensionsPanel", "InstallExtensionPanel",
@@ -773,7 +774,7 @@ function Get-NetworkTestDefinition {
         "github" {
             return [pscustomobject]@{
                 Name = "GitHub"
-                Uri = "https://api.github.com/repos/Comfy-Org/ComfyUI"
+                Uri = "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/master/comfyui_version.py"
                 StatusControl = $script:GithubTestStatusText
                 Button = $script:BtnTestGithub
             }
@@ -903,9 +904,12 @@ function Complete-NetworkTests {
                 if ($statusCode -ge 200 -and $statusCode -lt 400) {
                     $success = $true
                     $message = "连接成功 · ${latency} ms"
+                    if ($response.Headers.Contains('X-Launcher-Version-Source')) {
+                        $message = "API 暂不可用 · 官方发布页可用"
+                    }
                 }
                 else {
-                    $message = "服务器返回异常 · HTTP $statusCode"
+                    $message = ConvertTo-LauncherHttpFailure $response
                 }
             }
             finally {
@@ -1183,7 +1187,10 @@ function Complete-CoreUpdateCheck {
         $script:launcherSettings.updates.cachedCoreReleaseUrl = $script:latestCoreReleaseUrl
         Save-LauncherSettingsIfAllowed -Path $script:settingsPath -Settings $script:launcherSettings
         $script:LastUpdateCheckText.Text = "刚刚完成检查"
-        $script:UpdateTestStatusText.Text = "连接成功 · " + [int]$completedRequest.Stopwatch.ElapsedMilliseconds + " ms"
+        $sourceProperty = $release.PSObject.Properties['launcher_source']
+        $script:UpdateTestStatusText.Text = if ($null -ne $sourceProperty -and $sourceProperty.Value -eq 'official-release-page') {
+            "API 暂不可用 · 官方发布页查询成功"
+        } else { "连接成功 · " + [int]$completedRequest.Stopwatch.ElapsedMilliseconds + " ms" }
         $script:UpdateTestStatusText.Foreground = Get-Brush "#79D99D"
         $script:networkResults["update"] = [pscustomobject]@{
             Name = "版本服务器"
@@ -1469,8 +1476,11 @@ function Complete-CoreUpdateInstall {
                     else {
                         $script:UpdateCheckProgress.IsIndeterminate = $true
                     }
-                    if ([string]$status.stage -ne $script:coreUpdateLastStage) {
+                    $logMessage = [string]$status.message -replace '（已用时 \d+ 秒）', ''
+                    if ([string]$status.stage -ne $script:coreUpdateLastStage -or
+                        ([string]$status.stage -eq 'dependencies' -and $logMessage -ne $script:coreUpdateLastLogMessage)) {
                         $script:coreUpdateLastStage = [string]$status.stage
+                        $script:coreUpdateLastLogMessage = $logMessage
                         Append-Console (
                             "[UPDATE] {0}: {1}" -f
                             [string]$status.stage,
@@ -3837,6 +3847,7 @@ function Enter-ComfyUIChildEnvironment {
         "PYTORCH_CUDA_ALLOC_CONF" = "expandable_segments:True"
         "PYTHONUNBUFFERED" = "1"
         "PYTHONIOENCODING" = "utf-8"
+        "PYTHONUTF8" = "1"
         "NUMBA_CACHE_DIR" = Join-Path $root "user\cache\numba"
         "NO_ALBUMENTATIONS_UPDATE" = "1"
         "COMFYUI_MANAGER_SKIP_STARTUP_REFRESH" = "1"
@@ -3971,7 +3982,13 @@ function Open-ComfyUIWeb {
     if ($port -eq 0) {
         $port = 1080
     }
-    Open-ShellTarget "http://127.0.0.1:$port"
+    try {
+        $info = New-LauncherBrowserStartInfo -Executable $script:launcherSettings.browser.executable -Port $port
+        [void][System.Diagnostics.Process]::Start($info)
+    }
+    catch {
+        [void][System.Windows.MessageBox]::Show($script:window, $_.Exception.Message, (Get-UiText "DialogTitle"))
+    }
 }
 
 function Finalize-ComfyUIProcess {
@@ -3982,14 +3999,16 @@ function Finalize-ComfyUIProcess {
     }
 
     $startupFailed = (-not $ManualStop -and -not $script:portReady)
-    Read-PendingLogs
     $exitCode = -1
     try {
+        if ($script:comfyProcess.HasExited) { [void]$script:comfyProcess.WaitForExit(1000) }
         $exitCode = $script:comfyProcess.ExitCode
+        if ($null -eq $exitCode) { $exitCode = -1 }
     }
     catch {
         $exitCode = -1
     }
+    Read-PendingLogs
 
     if ($ManualStop) {
         Set-LauncherStatus (Get-UiText "StatusStopped") "#7F8B97"
@@ -3999,9 +4018,16 @@ function Finalize-ComfyUIProcess {
     }
 
     $failureLogPath = ""
+    $nullDeviceFailure = ($exitCode -eq 73)
     if ($startupFailed) {
         $failureLogPath = Save-LastStartupFailureLog `
             -Reason ("ComfyUI 进程退出，代码 {0}" -f $exitCode)
+        # Some .NET Process instances lose ExitCode after an early process exit.
+        # Retain the specific diagnosis from the bootstrap's marker in that case.
+        if ($failureLogPath -and [IO.File]::Exists($failureLogPath)) {
+            $nullDeviceFailure = $nullDeviceFailure -or
+                ([IO.File]::ReadAllText($failureLogPath).Contains('[LAUNCHER:E_NULL_DEVICE]'))
+        }
     }
 
     Set-RunningControls $false
@@ -4025,6 +4051,11 @@ function Finalize-ComfyUIProcess {
             [Environment]::NewLine + [Environment]::NewLine +
             "退出代码：$exitCode"
         )
+        if ($nullDeviceFailure) {
+            $message = "Windows 的 NUL 空设备无法读写，已在加载插件前停止。" +
+                [Environment]::NewLine + "不能据此判断缺少 pip、模型或显卡驱动。" +
+                [Environment]::NewLine + "启动器没有修改系统驱动或安全策略；需要进一步检查此电脑的系统设备访问。"
+        }
         if (-not [string]::IsNullOrWhiteSpace($failureLogPath)) {
             $message += (
                 [Environment]::NewLine +
@@ -4271,9 +4302,12 @@ function Start-ComfyUI {
             Invoke-RuntimeTempCleanup -Silent
         }
 
+        if (-not [IO.File]::Exists((Join-Path $script:root 'tools/ComfyUI-Runtime.py'))) {
+            throw '启动检查组件缺失：tools/ComfyUI-Runtime.py。请重新安装完整的启动器补丁。'
+        }
         $arguments = @(
             "-s",
-            "main.py",
+            "tools/ComfyUI-Runtime.py",
             "--listen",
             "127.0.0.1",
             "--port",
@@ -4599,6 +4633,7 @@ $script:coreUpdateRequestPath = ""
 $script:coreUpdateStatusPath = ""
 $script:coreUpdateLastStatusJson = ""
 $script:coreUpdateLastStage = ""
+$script:coreUpdateLastLogMessage = ""
 $script:coreUpdateRestartAfter = $false
 $script:extensionWorkerPath = $extensionWorkerPath
 $script:extensionJob = $null
@@ -5405,6 +5440,32 @@ $BtnFolderOutput.Add_Click({ Open-PackageFolder "output" })
 $BtnFolderUser.Add_Click({ Open-PackageFolder "user" })
 
 $BtnExportRunLog.Add_Click({ Export-CurrentRunLog })
+
+function Set-PreferredBrowser {
+    param([string]$Executable)
+    $previous = $script:launcherSettings.browser.executable
+    try {
+        if ($Executable) { [void](New-LauncherBrowserStartInfo -Executable $Executable -Port 1080) }
+        $script:launcherSettings.browser.executable = $Executable
+        Save-LauncherSettingsIfAllowed -Path $script:settingsPath -Settings $script:launcherSettings
+        $script:BrowserPathText.Text = if ($Executable) { $Executable } else { "系统默认浏览器" }
+        $script:BrowserPathText.ToolTip = $script:BrowserPathText.Text
+    }
+    catch {
+        $script:launcherSettings.browser.executable = $previous
+        [void][System.Windows.MessageBox]::Show($script:window, $_.Exception.Message, (Get-UiText "DialogTitle"))
+    }
+}
+$BrowserPathText.Text = if ($launcherSettings.browser.executable) { $launcherSettings.browser.executable } else { "系统默认浏览器" }
+$BrowserPathText.ToolTip = $BrowserPathText.Text
+$BtnChooseBrowser.Add_Click({
+    $dialog = New-Object Microsoft.Win32.OpenFileDialog
+    $dialog.Title = "选择浏览器程序，例如 msedge.exe、chrome.exe 或 firefox.exe"
+    $dialog.Filter = "浏览器程序 (*.exe)|*.exe"
+    $dialog.CheckFileExists = $true
+    if ($dialog.ShowDialog($script:window) -eq $true) { Set-PreferredBrowser $dialog.FileName }
+})
+$BtnDefaultBrowser.Add_Click({ Set-PreferredBrowser "" })
 
 $BtnCleanTemp.Add_Click({
     $answer = [System.Windows.MessageBox]::Show(

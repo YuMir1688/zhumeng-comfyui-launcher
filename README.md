@@ -1,4 +1,4 @@
-# 筑梦启动器 · ComfyUI 桌面版
+# 懒人筑梦启动器 · ComfyUI 桌面版
 
 面向 Windows ComfyUI 便携整合包的启动、网络配置、核心更新和扩展管理工具。
 
@@ -6,16 +6,29 @@
 
 ## 已有 1.3.0 包怎么升级
 
-1. 在 [Releases](https://github.com/YuMir1688/zhumeng-comfyui-launcher/releases) 下载 `zhumeng-first-update-1.3.2.zip`。
+1. 在 [Releases](https://github.com/YuMir1688/zhumeng-comfyui-launcher/releases) 下载 `zhumeng-first-update-1.3.6.zip`。
 2. 关闭 ComfyUI 和启动器，将补丁解压到原整合包根目录，与 `启动_ComfyUI.exe` 放在一起。
 3. 双击 `Install-Launcher-Update.cmd`，完成后重新打开启动器。
 4. 进入维护中心 → 版本更新 → **检查启动器更新**。之后可在线下载启动器补丁，无需重传整合包。
 
 首次补丁包含离线安装材料。不要把源码 ZIP 当作升级补丁，也不要安装到模型目录。
 
-## 1.3.4 同步修复
+## 1.3.6 启动兼容与诊断改进
 
-当前补丁是 1.3.4，包含网络异常闪退和核心更新 Get-FileHash 不可用修复。旧版使用 Release 中的 `zhumeng-first-update-1.3.4.zip`，解压至整合包根目录运行 `Install-Launcher-Update.cmd`。本版本只更新启动器与维护脚本。
+当前补丁版本为 **1.3.6**。针对 `FileNotFoundError: 'nul'`，在加载插件前检查 Windows 空设备。只有完整设备路径验证可读写时才在当前 ComfyUI 进程内启用兼容处理；若设备仍不可用，提前停止并自动记录只读诊断。不修改系统驱动、注册表或安全策略，不能保证修复系统设备本身的故障。
+
+同时包含浏览器选择、GitHub 版本查询 403/429 处理、下载停滞超时与依赖进度显示，以及“懒人筑梦启动器”首页名称。仅补启动器文件，不升级内核，不删除模型、插件、工作流或用户设置。
+
+| 已验证 | 未验证 |
+|---|---|
+| 模拟 NUL 名称故障后的真实 pip 检查与 Torch/dill 导入；不可用设备提前停止；中文空格路径与缺失运行目录；补丁安装、坏哈希拒绝及回滚 | 发生原始报错的学员电脑；所有 Windows、显卡、第三方插件与模型组合 |
+| 本机独立副本的内核 0.33.1 启动和无模型图像工作流 | 不保证每个子进程继承当前进程的 NUL 路径兼容；不保证所有网络无需代理 |
+
+详见 [1.3.6 验证记录](docs/validation-1.3.6.md) 和 [更新说明](RELEASE-NOTES-1.3.6.md)。
+
+## 历史：1.3.4 同步修复
+
+1.3.4 包含网络异常闪退和核心更新 Get-FileHash 不可用修复。这些修复已包含在后续补丁中，无需逐级安装。
 
 ## 1.3.3 紧急修复
 

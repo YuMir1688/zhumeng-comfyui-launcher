@@ -473,7 +473,8 @@ function Test-TransientArchiveDownloadError {
     catch {
     }
     Add-Type -AssemblyName System.Net.Http
-    if ($exception -is [System.Net.Http.HttpRequestException] -or
+    if ($exception -is [System.TimeoutException] -or
+        $exception -is [System.Net.Http.HttpRequestException] -or
         $exception -is [System.IO.IOException] -or
         $exception -is [System.IO.InvalidDataException] -or
         $exception -is [System.Threading.Tasks.TaskCanceledException]) {
@@ -540,7 +541,8 @@ function Invoke-UpdateArchiveDownloadAttempt {
         [Parameter(Mandatory = $true)][string]$DestinationPath,
         [string]$ProxyMode,
         [string]$ProxyAddress,
-        [int]$ProxyPort
+        [int]$ProxyPort,
+        [ValidateRange(1, 300)][int]$ReadTimeoutSeconds = 30
     )
 
     $client = New-UpdateHttpClient $ProxyMode $ProxyAddress $ProxyPort
@@ -566,8 +568,20 @@ function Invoke-UpdateArchiveDownloadAttempt {
             [System.IO.FileShare]::None
         )
         $buffer = New-Object byte[] 131072
+        $downloadTimer = [Diagnostics.Stopwatch]::StartNew()
         $lastPublish = [DateTimeOffset]::MinValue
-        while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        while ($true) {
+            # HttpClient.Timeout with ResponseHeadersRead only protects headers,
+            # not the response body. Bound stalled body reads as well.
+            $readTask = $inputStream.ReadAsync($buffer, 0, $buffer.Length)
+            if (-not $readTask.Wait([TimeSpan]::FromSeconds($ReadTimeoutSeconds))) {
+                throw [TimeoutException]::new("下载连续 $ReadTimeoutSeconds 秒未收到数据，将重试下载通道。")
+            }
+            $read = $readTask.GetAwaiter().GetResult()
+            if ($read -eq 0) { break }
+            if ($downloadTimer.Elapsed.TotalMinutes -gt 10) {
+                throw [TimeoutException]::new("源码下载超过 10 分钟，将重试下载通道。")
+            }
             $outputStream.Write($buffer, 0, $read)
             $downloaded += $read
             if (([DateTimeOffset]::UtcNow - $lastPublish).TotalMilliseconds -ge 350) {
@@ -580,7 +594,7 @@ function Invoke-UpdateArchiveDownloadAttempt {
                 }
                 Publish-Status `
                     -Stage "download" `
-                    -Message "正在下载官方源码归档…" `
+                    -Message ("正在下载源码：{0:N1} MB，平均 {1:N2} MB/s" -f ($downloaded / 1MB), ($downloaded / 1MB / [Math]::Max(0.1, $downloadTimer.Elapsed.TotalSeconds))) `
                     -Percent $percent
                 $lastPublish = [DateTimeOffset]::UtcNow
             }
@@ -945,11 +959,30 @@ function Invoke-CapturedProcess {
     # Background PowerShell jobs have a remoting input handle. Inheriting it
     # can hang Python before execution. These maintenance commands are noninteractive.
     $process.StandardInput.Close()
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
+    # Drain both pipes concurrently; report safe package names before pip exits.
+    $pipes = @(
+        @{ Reader = $process.StandardOutput; Task = $process.StandardOutput.ReadLineAsync(); Text = (New-Object Text.StringBuilder) },
+        @{ Reader = $process.StandardError; Task = $process.StandardError.ReadLineAsync(); Text = (New-Object Text.StringBuilder) }
+    )
+    $lastPackage = ""
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $lastStatusSecond = -10
-    while (-not $process.WaitForExit(500)) {
+    while ($true) {
+        foreach ($pipe in $pipes) {
+            $drained = 0
+            while ($null -ne $pipe.Task -and $pipe.Task.IsCompleted -and $drained -lt 200) {
+                $line = $pipe.Task.GetAwaiter().GetResult()
+                if ($null -eq $line) { $pipe.Task = $null; break }
+                [void]$pipe.Text.AppendLine($line)
+                # Do not publish URLs, credentials or arbitrary subprocess text to the UI.
+                if ($line -match '^\s*(Collecting|Downloading|Using cached|Processing)\s+([A-Za-z0-9][A-Za-z0-9_.-]{0,120})(?=[\s(=<>!~]|$)') {
+                    $lastPackage = $Matches[1] + ' ' + $Matches[2]
+                }
+                $pipe.Task = $pipe.Reader.ReadLineAsync()
+                $drained++
+            }
+        }
+        if ($process.HasExited -and $null -eq $pipes[0].Task -and $null -eq $pipes[1].Task) { break }
         if ($stopwatch.Elapsed.TotalSeconds -ge [Math]::Max(1, $TimeoutSeconds)) {
             try { $process.Kill() } catch {}
             $stageLabel = if ([string]::IsNullOrWhiteSpace($StatusStage)) {
@@ -970,13 +1003,14 @@ function Invoke-CapturedProcess {
             ($elapsedSeconds - $lastStatusSecond) -ge 5) {
             Publish-Status `
                 -Stage $StatusStage `
-                -Message ("{0}（已用时 {1} 秒）" -f $StatusMessage, $elapsedSeconds)
+                -Message ("{0}（已用时 {1} 秒）{2}" -f $StatusMessage, $elapsedSeconds, $(if ($lastPackage) { " · 最近输出：$lastPackage" } else { "" }))
             $lastStatusSecond = $elapsedSeconds
         }
+        Start-Sleep -Milliseconds 100
     }
     $stopwatch.Stop()
-    $stdout = $stdoutTask.GetAwaiter().GetResult()
-    $stderr = $stderrTask.GetAwaiter().GetResult()
+    $stdout = $pipes[0].Text.ToString()
+    $stderr = $pipes[1].Text.ToString()
     $exitCode = $process.ExitCode
     $process.Dispose()
     if (-not $SuppressOutputLog) {

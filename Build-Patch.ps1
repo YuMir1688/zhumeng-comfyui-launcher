@@ -1,4 +1,4 @@
-﻿param([string]$Version = '1.3.4')
+﻿param([string]$Version = '1.3.6')
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 $source = Join-Path $repo 'launcher'
@@ -15,6 +15,7 @@ $paths = @(
     'tools/ComfyUI-Extension-Worker.ps1', 'tools/Update-Launcher.ps1',
     'tools/launcher-version.json'
     'tools/PortableLauncher.cs'
+    'tools/ComfyUI-Runtime.py'
 )
 $files = foreach ($relative in $paths) {
     $path = Join-Path $source $relative

@@ -550,7 +550,7 @@
                                         <Ellipse Width="6" Height="6" Fill="#E8FF42" Margin="0,0,9,0" VerticalAlignment="Center"/>
                                         <TextBlock Text="COMFYUI  /  LOCAL WORKSPACE" FontSize="10.5" FontWeight="Bold" Foreground="#D6DEFF"/>
                                     </StackPanel>
-                                    <TextBlock Text="筑梦启动器" FontSize="33" FontWeight="SemiBold" Margin="0,6,0,0">
+                                    <TextBlock Text="懒人筑梦启动器" FontSize="33" FontWeight="SemiBold" Margin="0,6,0,0">
                                         <TextBlock.Effect>
                                             <DropShadowEffect Color="#060A12" BlurRadius="10" ShadowDepth="1" Opacity="0.52"/>
                                         </TextBlock.Effect>
@@ -836,7 +836,7 @@
                     </Grid.RowDefinitions>
                     <StackPanel>
                         <TextBlock Text="高级选项" FontSize="26" FontWeight="SemiBold"/>
-                        <TextBlock Text="修改仅影响本次启动；默认配置适合多数 RTX 30 / 40 / 50 系显卡。" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,7,0,0"/>
+                        <TextBlock Text="启动参数仅影响本次；浏览器选择会保存，不改变 Windows 默认浏览器。" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,7,0,0"/>
                     </StackPanel>
 
                     <Grid Grid.Row="2">
@@ -846,6 +846,7 @@
                             <ColumnDefinition Width="0.8*"/>
                         </Grid.ColumnDefinitions>
                         <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="20" Padding="26">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
@@ -872,12 +873,19 @@
                                 <StackPanel Grid.Row="3" Margin="0,20,0,0">
                                     <CheckBox x:Name="AutoBrowserCheck" Content="启动成功后自动打开浏览器" IsChecked="True"/>
                                     <CheckBox x:Name="AutoTempCleanCheck" Content="启动前和停止后清理运行临时目录 temp" IsChecked="True"/>
+                                    <TextBlock Text="打开 ComfyUI 使用的浏览器" FontWeight="SemiBold" Margin="0,8,0,5"/>
+                                    <TextBlock x:Name="BrowserPathText" Text="系统默认浏览器" TextTrimming="CharacterEllipsis" FontSize="12"/>
+                                    <WrapPanel Margin="0,6,0,12">
+                                        <Button x:Name="BtnChooseBrowser" Content="选择浏览器 EXE" Padding="10,5"/>
+                                        <Button x:Name="BtnDefaultBrowser" Content="恢复系统默认" Padding="10,5" Margin="8,0,0,0"/>
+                                    </WrapPanel>
                                 </StackPanel>
-                                <StackPanel Grid.Row="4" Orientation="Horizontal" VerticalAlignment="Bottom">
+                                <WrapPanel Grid.Row="4" VerticalAlignment="Bottom" Margin="0,12,0,0">
                                     <Button x:Name="BtnAdvancedStart" Style="{StaticResource RoundedButton}" Content="应用并启动" Width="150" Background="#E8FF42" Foreground="#10150D" BorderBrush="#E8FF42"/>
                                     <Button x:Name="BtnCleanTemp" Style="{StaticResource RoundedButton}" Content="清理运行缓存" Width="160" Margin="12,0,0,0"/>
-                                </StackPanel>
+                                </WrapPanel>
                             </Grid>
+                            </ScrollViewer>
                         </Border>
 
                         <Grid Grid.Column="2">

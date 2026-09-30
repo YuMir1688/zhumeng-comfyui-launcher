@@ -5,14 +5,25 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Python runtime and NUL failure regression
+        shell: powershell
+        run: python -B ./Test-Runtime.py
       - name: Network failures and WPF callbacks
         shell: powershell
-        run: ./Test-NetworkFailures.ps1
+        run: |
+          ./Test-NetworkFailures.ps1
+          ./Test-StartupFailure.ps1
       - name: Core updater regression tests
         shell: powershell
         run: |
           ./Test-CoreHash.ps1
           ./Test-BackgroundPython.ps1
+          ./Test-BrowserSelection.ps1
+          ./Test-UpdateLiveProgress.ps1
+          ./Test-DownloadStall.ps1
+          ./Test-BrowserLayout.ps1
+          ./Test-FullWindowBrowser.ps1
+          ./Test-GithubFallback.ps1
           ./launcher/tools/ComfyUI-Core-Updater.ps1 -SelfTest
       - name: Build patch
         shell: powershell

@@ -9,8 +9,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("Portable ComfyUI desktop launcher")]
 [assembly: AssemblyCompany("ComfyUI Desktop Package")]
 [assembly: AssemblyProduct("ComfyUI 桌面版")]
-[assembly: AssemblyVersion("1.3.4.0")]
-[assembly: AssemblyFileVersion("1.3.4.0")]
+[assembly: AssemblyVersion("1.3.6.0")]
+[assembly: AssemblyFileVersion("1.3.6.0")]
 
 internal static class PortableLauncher
 {
@@ -82,6 +82,7 @@ internal static class PortableLauncher
                 mainPath,
                 Path.Combine(root, "tools", "ComfyUI-Launcher.xaml"),
                 Path.Combine(root, "tools", "ComfyUI-Launcher.Services.psm1"),
+                Path.Combine(root, "tools", "ComfyUI-Runtime.py"),
                 Path.Combine(root, "tools", "ComfyUI-Core-Updater.ps1"),
                 Path.Combine(root, "tools", "ComfyUI-Extension-Worker.ps1"),
                 Path.Combine(root, "tools", "launcher-version.json"),

@@ -21,6 +21,7 @@ $requiredPaths = @(
     "tools\ComfyUI-Launcher.ps1",
     "tools\ComfyUI-Launcher.xaml",
     "tools\ComfyUI-Launcher.Services.psm1",
+    "tools\ComfyUI-Runtime.py",
     "tools\ComfyUI-Core-Updater.ps1",
     "tools\Update-Launcher.ps1",
     "tools\ComfyUI-Extension-Worker.ps1",
@@ -99,6 +100,7 @@ $expectedChecksumRelativePaths = @(
     "tools\ComfyUI-Launcher.ps1",
     "tools\ComfyUI-Launcher.xaml",
     "tools\ComfyUI-Launcher.Services.psm1",
+    "tools\ComfyUI-Runtime.py",
     "tools\ComfyUI-Core-Updater.ps1",
     "tools\ComfyUI-Extension-Worker.ps1",
     "tools\Update-Launcher.ps1",
@@ -589,6 +591,7 @@ try {
     foreach ($relativePath in @(
         "tools\ComfyUI-Launcher.xaml",
         "tools\ComfyUI-Launcher.Services.psm1",
+        "tools\ComfyUI-Runtime.py",
         "tools\ComfyUI-Core-Updater.ps1",
         "tools\ComfyUI-Extension-Worker.ps1",
         "tools\launcher-version.json",
