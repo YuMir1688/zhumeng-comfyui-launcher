@@ -1466,8 +1466,6 @@
                                     <ComboBoxItem Content="全部状态" Tag="all" IsSelected="True"/>
                                     <ComboBoxItem Content="已启用" Tag="enabled"/>
                                     <ComboBoxItem Content="已停用" Tag="disabled"/>
-                                    <ComboBoxItem Content="已移除备份" Tag="recoverable"/>
-                                    <ComboBoxItem Content="需要处理" Tag="attention"/>
                                 </ComboBox>
                                 <Button
                                     x:Name="BtnRefreshInstalledExtensions"
@@ -1536,7 +1534,7 @@
                                     <Button x:Name="BtnEnableInstalledExtension" Style="{StaticResource CompactButton}" Content="启用" Width="58" IsEnabled="False"/>
                                     <Button x:Name="BtnDisableInstalledExtension" Style="{StaticResource CompactButton}" Content="停用" Width="58" Margin="7,0,0,0" IsEnabled="False"/>
                                     <Button x:Name="BtnOpenInstalledExtensionFolder" Style="{StaticResource CompactButton}" Content="打开目录" Width="76" Margin="7,0,0,0" IsEnabled="False"/>
-                                    <Button x:Name="BtnRemoveInstalledExtension" Style="{StaticResource CompactButton}" Content="移除" Width="58" Margin="7,0,0,0" IsEnabled="False" Foreground="#FF9BA5"/>
+                                    <Button x:Name="BtnRemoveInstalledExtension" Style="{StaticResource CompactButton}" Content="删除" Width="58" Margin="7,0,0,0" IsEnabled="False" Foreground="#FF9BA5"/>
                                 </StackPanel>
                             </Grid>
                         </Grid>

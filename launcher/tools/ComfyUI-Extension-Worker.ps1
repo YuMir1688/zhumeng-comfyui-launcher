@@ -462,10 +462,12 @@ function Remove-TreeWithoutFollowingReparse {
                 }
             }
             else {
-                [System.IO.File]::SetAttributes(
-                    $child,
-                    $childAttributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
-                )
+                if (-not $childIsReparse) {
+                    [System.IO.File]::SetAttributes(
+                        $child,
+                        $childAttributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
+                    )
+                }
                 [System.IO.File]::Delete($child)
             }
         }
@@ -637,35 +639,21 @@ function Get-BundledNodeSet {
                 # PowerShell enumerates collection objects written to the
                 # pipeline.  Preserve the HashSet itself so callers always
                 # receive an object with the expected Contains method,
-                # including when the protected set is empty.
+                # including when the release inventory is empty.
                 return ,$set
             }
         }
         catch {
             Write-WorkerLog (
-                "发布版扩展保护清单无效，已启用保守保护：{0}" -f
+                "发布版扩展来源清单无效，将按外部扩展显示：{0}" -f
                 (ConvertTo-SafeText $_.Exception.Message)
             )
         }
         $set.Clear()
     }
 
-    # Fail safe for an older release or an invalid baseline manifest: every
-    # existing directory is protected rather than allowing accidental removal.
-    foreach ($parent in @($Paths.CustomNodes, $Paths.Disabled)) {
-        if (-not [System.IO.Directory]::Exists($parent) -or
-            (Test-ReparsePoint $parent)) {
-            continue
-        }
-        foreach ($directory in @(
-            Get-ChildItem -LiteralPath $parent -Directory -Force -ErrorAction Stop
-        )) {
-            if ($directory.Name -notin @(".disabled", "__pycache__") -and
-                (Test-SafeDirectoryName $directory.Name)) {
-                [void]$set.Add($directory.Name)
-            }
-        }
-    }
+    # Legacy inventory describes origin only, not removal permissions.
+    # Missing inventory must not invent a bundled origin or lock extensions.
     return ,$set
 }
 
@@ -824,9 +812,6 @@ function New-InstalledItem {
             $ManagedVerified
         )
         CanRemove = (
-            $isManaged -and
-            $ManagedVerified -and
-            -not $Bundled -and
             $effectiveState -in @("enabled", "disabled") -and
             -not $UnsafePath
         )
@@ -1625,7 +1610,7 @@ function Test-ComfyUIRunning {
                 }
             }
             $mainMatches = $commandLine -match (
-                '(?i)(?:^|[\\/"\s])main\.py(?:["\s]|$)'
+                '(?i)(?:^|[\\/"\s])(?:main\.py|ComfyUI-Runtime\.py)(?:["\s]|$)'
             )
             if ($mainMatches -and ($pythonMatches -or $rootMatches)) {
                 return $true
@@ -2605,7 +2590,9 @@ function New-Transaction {
     param(
         [Parameter(Mandatory = $true)][object]$Paths,
         [Parameter(Mandatory = $true)][string]$Operation,
-        [Parameter(Mandatory = $true)][string]$Directory
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [string]$PreviousState = "",
+        [string]$ManagedId = ""
     )
 
     $transactionId = [Guid]::NewGuid().ToString("N")
@@ -2623,7 +2610,8 @@ function New-Transaction {
         archiveSha256 = ""
         newPackages = @()
         dependencyChanges = @()
-        previousState = ""
+        previousState = $PreviousState
+        managedId = $ManagedId
         error = ""
     }
     Write-Utf8Atomic `
@@ -2750,8 +2738,10 @@ function Invoke-InterruptedExtensionTransactionRecovery {
     $terminalPhases = @{
         install = @("completed", "rolled-back")
         remove = @("completed", "restored", "rolled-back")
+        delete = @("completed", "cancelled")
     }
     $allowedPhases = @{
+        delete = @("prepared", "deleting", "completed", "cancelled")
         install = @(
             "prepared",
             "downloading",
@@ -2815,7 +2805,7 @@ function Invoke-InterruptedExtensionTransactionRecovery {
         if ([int](Get-ObjectValue $manifest "schemaVersion" 0) -ne 1 -or
             [string](Get-ObjectValue $manifest "id" "") -ne
                 $directoryInfo.Name -or
-            $operation -notin @("install", "remove") -or
+            $operation -notin @("install", "remove", "delete") -or
             -not (Test-SafeDirectoryName $extensionDirectory) -or
             $phase -notin $allowedPhases[$operation]) {
             Throw-RecoveryRequired (
@@ -2891,6 +2881,18 @@ function Invoke-InterruptedExtensionTransactionRecovery {
     }
 
     foreach ($transaction in $pending.ToArray()) {
+        if ($transaction.Operation -eq "delete") {
+            [void](Get-PermanentDeletionPaths $Paths $transaction)
+            [void]$actions.Add([pscustomobject]@{
+                Kind = "finish-delete"
+                Transaction = $transaction
+                Source = ""
+                Destination = ""
+                TargetPhase = ""
+                ErrorMessage = ""
+            })
+            continue
+        }
         $key = ([string]$transaction.Directory).ToLowerInvariant()
         $record = if ($recordsByDirectory.ContainsKey($key)) {
             $recordsByDirectory[$key]
@@ -3193,6 +3195,10 @@ function Invoke-InterruptedExtensionTransactionRecovery {
 
     Assert-MutationAllowed $Paths
     foreach ($action in $actions.ToArray()) {
+        if ($action.Kind -eq "finish-delete") {
+            Complete-PermanentExtensionDeletion $Paths $action.Transaction
+            continue
+        }
         if ($action.Kind -eq "move-and-update") {
             if ([System.IO.Directory]::Exists($action.Destination) -or
                 [System.IO.File]::Exists($action.Destination) -or
@@ -4066,13 +4072,128 @@ function Invoke-InstallExtension {
     }
 }
 
+function Get-PermanentDeletionPaths {
+    param([object]$Paths, [object]$Transaction)
+
+    $directory = [string]$Transaction.Manifest.directory
+    $previousState = [string]$Transaction.Manifest.previousState
+    $managedId = [string](Get-ObjectValue $Transaction.Manifest "managedId" "")
+    if ($Transaction.Id -notmatch '^[a-f0-9]{32}$' -or
+        [string]$Transaction.Manifest.id -ne $Transaction.Id -or
+        [string]$Transaction.Manifest.operation -ne "delete" -or
+        [string]$Transaction.Manifest.phase -notin @("prepared", "deleting") -or
+        -not (Test-SafeDirectoryName $directory) -or
+        $previousState -notin @("enabled", "disabled") -or
+        ($managedId -ne "" -and $managedId -notmatch '^managed:[a-f0-9]{24}$')) {
+        Throw-RecoveryRequired "删除事务字段无效。"
+    }
+    $transactionRoot = Join-Path $Paths.Transactions $Transaction.Id
+    if (-not ([IO.Path]::GetFullPath($Transaction.Root)).Equals(
+        [IO.Path]::GetFullPath($transactionRoot), [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-RecoveryRequired "删除事务目录无效。"
+    }
+    Assert-NoReparseAncestors -Path $Transaction.ManifestPath -StopAt $Paths.Root
+    $parent = if ($previousState -eq "enabled") { $Paths.CustomNodes } else { $Paths.Disabled }
+    $source = Join-Path $parent $directory
+    $pendingParent = Join-Path $transactionRoot "pending-delete"
+    $pending = Join-Path $pendingParent $directory
+    Assert-NoReparseAncestors -Path $source -StopAt $Paths.Root
+    Assert-NoReparseAncestors -Path $pending -StopAt $Paths.Root
+    if ([IO.File]::Exists($source) -or [IO.File]::Exists($pending) -or
+        [IO.File]::Exists($pendingParent)) {
+        Throw-RecoveryRequired "删除目录被同名文件占用。"
+    }
+    return [pscustomobject]@{ Source = $source; Pending = $pending; Parent = $pendingParent }
+}
+
+function Complete-PermanentExtensionDeletion {
+    param([object]$Paths, [object]$Transaction)
+
+    $deletePaths = Get-PermanentDeletionPaths $Paths $Transaction
+    Assert-MutationAllowed $Paths
+    if (-not [IO.Directory]::Exists($deletePaths.Pending) -and
+        [IO.Directory]::Exists($deletePaths.Source)) {
+        # No move occurred (or the user created a new directory after deletion).
+        # Recovery must NEVER delete an active directory again automatically.
+        Update-Transaction $Transaction "cancelled"
+        return
+    }
+    if ([string]$Transaction.Manifest.phase -eq "prepared") {
+        if ([IO.Directory]::Exists($deletePaths.Pending)) {
+            Throw-RecoveryRequired "删除事务阶段与待删除目录不一致。"
+        }
+        Update-Transaction $Transaction "cancelled"
+        return
+    }
+    $state = Read-WorkerState $Paths
+    $managedId = [string](Get-ObjectValue $Transaction.Manifest "managedId" "")
+    $records = @($state.managed | Where-Object { [string]$_.id -eq $managedId })
+    if ($records.Count -gt 1 -or ($records.Count -eq 1 -and (
+        [string]$records[0].directory -ne [string]$Transaction.Manifest.directory -or
+        [string]$records[0].state -ne [string]$Transaction.Manifest.previousState))) {
+        Throw-RecoveryRequired "删除事务与扩展管理记录不一致。"
+    }
+    # A uniquely named, same-volume deletion queue is NOT a restore backup.
+    # Only its contents can be resumed after an interruption, never a live node.
+    Remove-TreeWithoutFollowingReparse -Path $deletePaths.Pending -ApprovedRoot $Transaction.Root
+    if ([IO.Directory]::Exists($deletePaths.Parent)) {
+        [IO.Directory]::Delete($deletePaths.Parent, $false)
+    }
+    if ($records.Count -eq 1) {
+        $state.managed = @($state.managed | Where-Object { [string]$_.id -ne $managedId })
+        Save-WorkerState $Paths $state
+    }
+    Complete-TransactionBestEffort $Transaction "completed"
+}
+
 function Invoke-RemoveExtension {
+    param([object]$Paths, [string]$ItemId, [string]$ItemName)
+
+    Assert-MutationAllowed $Paths
+    $item = Resolve-InstalledItem $Paths $ItemId $ItemName
+    if (-not [bool]$item.CanRemove) {
+        Throw-WorkerError "E_EXTENSION_UNAVAILABLE" "此扩展状态或路径异常，暂不能安全删除。"
+    }
+    $source = [string]$item.Path
+    $parent = if ($item.State -eq "enabled") { $Paths.CustomNodes } else { $Paths.Disabled }
+    if (-not (Test-DirectChildPath $source $parent) -or
+        -not [IO.Directory]::Exists($source)) {
+        Throw-WorkerError "E_PATH_UNSAFE" "扩展目录路径无效。"
+    }
+    Assert-NoReparseAncestors -Path $source -StopAt $Paths.Root
+    $managedId = if ($item.Id -match '^managed:') { [string]$item.Id } else { "" }
+    $transaction = New-Transaction -Paths $Paths -Operation "delete" -Directory ([string]$item.Directory) `
+        -PreviousState ([string]$item.State) -ManagedId $managedId
+    Update-Transaction $transaction "deleting"
+    $deletePaths = Get-PermanentDeletionPaths $Paths $transaction
+    [void][IO.Directory]::CreateDirectory($deletePaths.Parent)
+    Assert-MutationAllowed $Paths
+    [IO.Directory]::Move($source, $deletePaths.Pending)
+    try {
+        Complete-PermanentExtensionDeletion $Paths $transaction
+    }
+    catch {
+        Throw-WorkerError "E_DELETE_INCOMPLETE" (
+            "扩展已退出加载目录，但永久删除尚未完成。请关闭占用文件的程序后刷新重试；" +
+            "已删除的内容无法恢复。详情：" + (ConvertTo-SafeText $_.Exception.Message)
+        )
+    }
+    Write-WorkerLog ("扩展已永久删除（无恢复备份）：" + [string]$item.Directory)
+    return New-WorkerResult -ResultAction "Remove" -Ok $true -Code "OK" `
+        -Message "扩展已永久删除，不保留恢复备份；共享 Python 依赖未卸载。" `
+        -Data ([ordered]@{ id = $item.Id; directory = $item.Directory; dependenciesRetained = $true }) `
+        -RollbackAvailable $false -TransactionId $transaction.Id
+}
+
+function Invoke-SelfTestLegacyRemove {
     param(
         [Parameter(Mandatory = $true)][object]$Paths,
         [string]$ItemId,
         [string]$ItemName
     )
 
+    # Only construct old-version backups for backwards-compatibility tests.
+    if (-not $script:selfTestMode) { throw "Legacy removal is test-only." }
     Assert-MutationAllowed $Paths
     $item = Resolve-InstalledItem $Paths $ItemId $ItemName
     if (-not [bool]$item.CanRemove -or $item.Origin -ne "launcher") {
@@ -4450,6 +4571,133 @@ function New-SelfTestManagedExtension {
     }
 }
 
+function Invoke-PermanentRemovalSelfTest {
+    param([string]$TestRoot)
+
+    $root = Join-Path $TestRoot "permanent-delete"
+    [void][IO.Directory]::CreateDirectory((Join-Path $root "custom_nodes"))
+    [void][IO.Directory]::CreateDirectory((Join-Path $root "tools"))
+    [IO.File]::WriteAllText((Join-Path $root "main.py"), "# test", $script:utf8)
+    $paths = Initialize-WorkerRoot $root
+    $sentinels = @("models/keep.bin", "user/workflows/keep.json", "input/keep.png",
+        "output/keep.png", ".ext/Lib/site-packages/keep.py", "custom_nodes/Other-Node/keep.txt")
+    foreach ($relative in $sentinels) {
+        $path = Join-Path $root $relative
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
+        [IO.File]::WriteAllText($path, "do not touch", $script:utf8)
+    }
+    foreach ($origin in @("bundled", "external", "launcher")) {
+        foreach ($stateName in @("enabled", "disabled")) {
+            $name = "$origin-$stateName"
+            $parent = if ($stateName -eq "enabled") { $paths.CustomNodes } else { $paths.Disabled }
+            $path = Join-Path $parent $name
+            if ($origin -eq "launcher") {
+                [void](New-SelfTestManagedExtension $paths $name $stateName)
+            }
+            else {
+                [void][IO.Directory]::CreateDirectory($path)
+            }
+            $inventoryNodes = if ($origin -eq "bundled") {
+                @([ordered]@{ directory = $name; initialState = $stateName
+                    relativePath = $path.Substring($root.Length + 1) })
+            } else { @() }
+            Write-Utf8Atomic $paths.BundledManifest ([ordered]@{
+                schemaVersion = 1; policy = "protected-release-baseline"
+                count = @($inventoryNodes).Count; nodes = @($inventoryNodes)
+            } | ConvertTo-Json -Depth 5)
+            [IO.File]::WriteAllText((Join-Path $path "settings.txt"), "remove with extension", $script:utf8)
+            $item = Resolve-InstalledItem $paths "" $name
+            Assert-SelfTest ($item.Origin -eq $origin -and $item.CanRemove) "三种来源的删除权限测试失败。"
+            $result = Invoke-RemoveExtension $paths $item.Id ""
+            $transaction = Get-SelfTestTransaction $paths $result.transactionId
+            Assert-SelfTest (
+                $result.ok -and -not $result.rollbackAvailable -and
+                $result.data.dependenciesRetained -and -not [IO.Directory]::Exists($path) -and
+                @((Get-InstalledItems $paths) | Where-Object Directory -eq $name).Count -eq 0 -and
+                @((Read-WorkerState $paths).managed | Where-Object directory -eq $name).Count -eq 0 -and
+                $transaction.Manifest.phase -eq "completed" -and
+                -not [IO.Directory]::Exists((Join-Path $transaction.Root "backup")) -and
+                -not [IO.Directory]::Exists((Join-Path $transaction.Root "pending-delete"))
+            ) "永久删除、无恢复条目或无备份测试失败。"
+        }
+    }
+
+    # Links cannot expand deletion to other extensions, models or external data.
+    $linkedNode = Join-Path $paths.CustomNodes "Linked-Node"
+    [void][IO.Directory]::CreateDirectory($linkedNode)
+    [void](New-Item -ItemType Junction -Path (Join-Path $linkedNode "linked-models") -Target (Join-Path $root "models"))
+    [void](Invoke-RemoveExtension $paths "" "Linked-Node")
+    $rootLink = Join-Path $paths.CustomNodes "Root-Link"
+    [void](New-Item -ItemType Junction -Path $rootLink -Target (Join-Path $root "models"))
+    $blocked = $false
+    try { [void](Invoke-RemoveExtension $paths "" "Root-Link") }
+    catch { $blocked = [string]$_.Exception.Data["WorkerCode"] -eq "E_EXTENSION_UNAVAILABLE" }
+    Assert-SelfTest ($blocked -and (Test-ReparsePoint $rootLink)) "扩展根链接必须阻止删除。"
+    [IO.Directory]::Delete($rootLink, $false)
+
+    # Interrupted after journal creation but BEFORE move: no automatic live deletion.
+    $untouched = Join-Path $paths.CustomNodes "Untouched-Node"
+    [void][IO.Directory]::CreateDirectory($untouched)
+    $before = New-Transaction $paths "delete" "Untouched-Node"
+    $before.Manifest.previousState = "enabled"
+    Update-Transaction $before "deleting"
+    Invoke-InterruptedExtensionTransactionRecovery $paths
+    Assert-SelfTest (
+        [IO.Directory]::Exists($untouched) -and
+        (Get-SelfTestTransaction $paths $before.Id).Manifest.phase -eq "cancelled"
+    ) "中断删除不能自动删除活动目录。"
+    $prepared = New-Transaction $paths "delete" "Untouched-Node" "enabled"
+    Invoke-InterruptedExtensionTransactionRecovery $paths
+    Assert-SelfTest (
+        [IO.Directory]::Exists($untouched) -and
+        (Get-SelfTestTransaction $paths $prepared.Id).Manifest.phase -eq "cancelled"
+    ) "准备阶段中断应安全取消，不阻塞后续操作。"
+
+    # Lock a file AFTER move, then create a replacement in custom_nodes. Resume
+    # may remove only the unique pending directory, not the replacement node.
+    $pendingNode = New-SelfTestManagedExtension $paths "Pending-Node"
+    $after = New-Transaction $paths "delete" "Pending-Node" "enabled" $pendingNode.Id
+    Update-Transaction $after "deleting"
+    $deletePaths = Get-PermanentDeletionPaths $paths $after
+    [void][IO.Directory]::CreateDirectory($deletePaths.Parent)
+    [IO.Directory]::Move($pendingNode.Path, $deletePaths.Pending)
+    $locked = [IO.File]::Open((Join-Path $deletePaths.Pending "__init__.py"), 'Open', 'Read', 'Read')
+    $lockBlocked = $false
+    try { Complete-PermanentExtensionDeletion $paths $after }
+    catch { $lockBlocked = $true }
+    finally { $locked.Dispose() }
+    Assert-SelfTest ($lockBlocked -and [IO.Directory]::Exists($deletePaths.Pending)) "文件占用不能假报删除成功。"
+    [void][IO.Directory]::CreateDirectory($pendingNode.Path)
+    [IO.File]::WriteAllText((Join-Path $pendingNode.Path "new.txt"), "keep replacement", $script:utf8)
+    Invoke-InterruptedExtensionTransactionRecovery $paths
+    Invoke-InterruptedExtensionTransactionRecovery $paths
+    Assert-SelfTest (
+        -not [IO.Directory]::Exists($deletePaths.Pending) -and
+        (Get-SelfTestTransaction $paths $after.Id).Manifest.phase -eq "completed" -and
+        [IO.File]::ReadAllText((Join-Path $pendingNode.Path "new.txt")) -eq "keep replacement" -and
+        @((Read-WorkerState $paths).managed | Where-Object id -eq $pendingNode.Id).Count -eq 0
+    ) "删除中断继续清理或幂等测试失败。"
+
+    # The runtime bootstrap still runs a ComfyUI server: block mutation too.
+    function Get-CimInstance {
+        param($ClassName, $Filter, $ErrorAction)
+        [pscustomobject]@{ ExecutablePath = $paths.Python
+            CommandLine = '"' + $paths.Python + '" -s "' + (Join-Path $paths.Root 'tools\ComfyUI-Runtime.py') + '"' }
+    }
+    $script:selfTestMode = $false
+    try {
+        $runningBlocked = $false
+        try { Assert-MutationAllowed $paths }
+        catch { $runningBlocked = [string]$_.Exception.Data["WorkerCode"] -eq "E_COMFY_RUNNING" }
+        Assert-SelfTest $runningBlocked "Runtime 引导启动时必须阻止扩展变更。"
+    }
+    finally { $script:selfTestMode = $true }
+
+    foreach ($relative in $sentinels) {
+        Assert-SelfTest ([IO.File]::ReadAllText((Join-Path $root $relative)) -eq "do not touch") "删除扩展不得改动其他数据。"
+    }
+}
+
 function Invoke-WorkerSelfTest {
     $script:selfTestMode = $true
     $tempParent = [System.IO.Path]::GetFullPath(
@@ -4496,9 +4744,9 @@ function Invoke-WorkerSelfTest {
         $builtIn = @($initial | Where-Object Directory -eq "BuiltIn-A")[0]
         Assert-SelfTest (
             $builtIn.Origin -eq "bundled" -and
-            -not $builtIn.CanRemove -and
+            $builtIn.CanRemove -and
             $builtIn.CanOpenFolder
-        ) "发布版扩展保护测试失败。"
+        ) "内置扩展应允许用户主动删除。"
         $simulatedManagedBuiltIn = New-InstalledItem `
             -Directory "BuiltIn-A" `
             -StateName "enabled" `
@@ -4513,23 +4761,23 @@ function Invoke-WorkerSelfTest {
             -ManagedVerified $true
         Assert-SelfTest (
             $simulatedManagedBuiltIn.Origin -eq "bundled" -and
-            -not $simulatedManagedBuiltIn.CanRemove
-        ) "发布版扩展不能被管理记录解除保护。"
+            $simulatedManagedBuiltIn.CanRemove
+        ) "有效管理记录的内置扩展应允许删除。"
         $external = @($initial | Where-Object Directory -eq "External-A")[0]
         Assert-SelfTest (
             $external.Origin -eq "external" -and
-            -not $external.CanRemove -and
+            $external.CanRemove -and
             $external.CanOpenFolder
-        ) "外部扩展保护测试失败。"
+        ) "外部扩展应允许用户主动删除。"
 
         Write-Utf8Atomic `
             -Path $paths.BundledManifest `
             -Text '{"schemaVersion":99,"policy":"invalid","count":0,"nodes":[]}'
-        $fallbackProtection = Get-BundledNodeSet $paths
+        $fallbackInventory = Get-BundledNodeSet $paths
         Assert-SelfTest (
-            $fallbackProtection.Contains("BuiltIn-A") -and
-            $fallbackProtection.Contains("External-A")
-        ) "保护清单损坏时的保守保护测试失败。"
+            $fallbackInventory.Count -eq 0 -and
+            @((Get-InstalledItems $paths) | Where-Object { -not $_.CanRemove }).Count -eq 0
+        ) "来源清单损坏不应锁定扩展。"
         Write-Utf8Atomic `
             -Path $paths.BundledManifest `
             -Text ($bundledManifest | ConvertTo-Json -Depth 5)
@@ -4851,7 +5099,7 @@ function Invoke-WorkerSelfTest {
             )
         ) "已安装扩展目录状态测试失败。"
 
-        $remove = Invoke-RemoveExtension $paths $managedId ""
+        $remove = Invoke-SelfTestLegacyRemove $paths $managedId ""
         Assert-SelfTest (
             $remove.ok -and $remove.rollbackAvailable -and
             -not [System.IO.Directory]::Exists($managedPath)
@@ -4883,7 +5131,7 @@ function Invoke-WorkerSelfTest {
             -not $catalogReinstalled.data.items[0].CanReinstall
         ) "重新安装后目录状态测试失败。"
 
-        [void](Invoke-RemoveExtension $paths $managedId "")
+        [void](Invoke-SelfTestLegacyRemove $paths $managedId "")
         Write-Utf8Atomic `
             -Path $paths.Catalog `
             -Text ($cache | ConvertTo-Json -Depth 8)
@@ -5227,7 +5475,7 @@ function Invoke-WorkerSelfTest {
         $restoreBefore = New-SelfTestManagedExtension `
             -Paths $recoveryPaths `
             -Directory "Recover-Restore-Before"
-        $restoreBeforeResult = Invoke-RemoveExtension `
+        $restoreBeforeResult = Invoke-SelfTestLegacyRemove `
             -Paths $recoveryPaths `
             -ItemId $restoreBefore.Id `
             -ItemName ""
@@ -5251,7 +5499,7 @@ function Invoke-WorkerSelfTest {
         $restoreAfter = New-SelfTestManagedExtension `
             -Paths $recoveryPaths `
             -Directory "Recover-Restore-After"
-        $restoreAfterResult = Invoke-RemoveExtension `
+        $restoreAfterResult = Invoke-SelfTestLegacyRemove `
             -Paths $recoveryPaths `
             -ItemId $restoreAfter.Id `
             -ItemName ""
@@ -5279,7 +5527,7 @@ function Invoke-WorkerSelfTest {
         $restoreCommitted = New-SelfTestManagedExtension `
             -Paths $recoveryPaths `
             -Directory "Recover-Restore-Committed"
-        $restoreCommittedResult = Invoke-RemoveExtension `
+        $restoreCommittedResult = Invoke-SelfTestLegacyRemove `
             -Paths $recoveryPaths `
             -ItemId $restoreCommitted.Id `
             -ItemName ""
@@ -5376,6 +5624,8 @@ function Invoke-WorkerSelfTest {
             $healthArguments -contains "--user-directory"
         ) "单扩展健康检查隔离参数测试失败。"
 
+        Invoke-PermanentRemovalSelfTest $testRoot
+
         return New-WorkerResult `
             -ResultAction "SelfTest" `
             -Ok $true `
@@ -5383,8 +5633,12 @@ function Invoke-WorkerSelfTest {
             -Message "扩展 Worker 纯本地自测全部通过。" `
             -Data ([ordered]@{
                 result = "OK"
-                listProtection = "Verified"
-                manifestFailSafe = "Verified"
+                removalPermissions = "Verified"
+                manifestOriginFallback = "Verified"
+                permanentDeletionAllOrigins = "Verified"
+                permanentDeletionNoBackup = "Verified"
+                interruptedDeletionSafety = "Verified"
+                deletionProtectedData = "Verified"
                 enableDisable = "Verified"
                 catalogFiltering = "Verified"
                 catalogSearch = "Verified"

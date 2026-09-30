@@ -2030,14 +2030,6 @@ function Update-InstalledExtensionView {
                     [string]$item.State -eq "disabled"
                     break
                 }
-                "recoverable" {
-                    [string]$item.State -eq "recoverable"
-                    break
-                }
-                "attention" {
-                    [string]$item.State -eq "attention"
-                    break
-                }
                 default { $true }
             }
             if ($matchesFilter) {
@@ -2048,7 +2040,7 @@ function Update-InstalledExtensionView {
 
     $script:InstalledExtensionsGrid.ItemsSource = [object[]]$items
     $script:InstalledExtensionsStatusText.Text = (
-        "显示 {0} 项，共 {1} 项；整合包内置扩展受保护。" -f
+        "显示 {0} 项，共 {1} 项；内置扩展也可删除，删除后无法恢复。" -f
         $items.Count,
         @($script:installedExtensionItems).Count
     )
@@ -2680,7 +2672,7 @@ function Request-ExtensionMutation {
         "Enable" { "启用" }
         "Disable" { "停用" }
         "Install" { "安装" }
-        "Remove" { "移除" }
+        "Remove" { "永久删除" }
         "Restore" { "重新安装" }
     }
     $details = switch ($Action) {
@@ -2688,7 +2680,7 @@ function Request-ExtensionMutation {
             "安装器仅接受当前扩展目录中的 GitHub HTTPS 来源，并会在写入前检查目录和 Python 依赖。"
         }
         "Remove" {
-            "仅启动器安装的扩展可以移除；文件将进入本地安全备份，Python 依赖暂不卸载。"
+            "将永久删除此扩展文件夹及其中的所有文件，不保留备份、无法恢复。依赖此扩展的工作流将缺少相关节点。不会卸载共享 Python 依赖，也不会删除整合包的 models、工作流及输入输出目录。`n`n删除目录：" + [string]$Item.Path
         }
         "Restore" {
             "使用启动器保留的本地安全备份重新安装，不重新下载，也不重复安装 Python 依赖。"
@@ -2715,7 +2707,8 @@ function Request-ExtensionMutation {
         $confirmationMessage,
         (Get-UiText "DialogTitle"),
         [System.Windows.MessageBoxButton]::YesNo,
-        [System.Windows.MessageBoxImage]::Warning
+        [System.Windows.MessageBoxImage]::Warning,
+        [System.Windows.MessageBoxResult]::No
     )
     if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
         return
@@ -4809,6 +4802,11 @@ if ($SelfTest) {
     if ([string]$script:BtnExtensionsTab.Content -ne "已安装扩展" -or
         [string]$script:BtnInstallExtensionTab.Content -ne "安装扩展") {
         throw "Extension management tabs are not wired to the launcher UI."
+    }
+    $extensionFilterTags = @($script:InstalledExtensionsFilterCombo.Items | ForEach-Object { [string]$_.Tag })
+    if (($extensionFilterTags -join ',') -ne 'all,enabled,disabled' -or
+        [string]$script:BtnRemoveInstalledExtension.Content -ne "删除") {
+        throw "Extension filters and permanent-delete button do not match the intended UI."
     }
     if ([string]$script:BtnInventoryScan.Content -ne "修复整合包" -or
         -not $script:BtnInventoryScan.IsEnabled) {

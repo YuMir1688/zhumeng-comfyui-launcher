@@ -25,6 +25,9 @@ jobs:
           ./Test-FullWindowBrowser.ps1
           ./Test-GithubFallback.ps1
           ./launcher/tools/ComfyUI-Core-Updater.ps1 -SelfTest
+      - name: Extension deletion safety and legacy compatibility
+        shell: powershell
+        run: ./launcher/tools/ComfyUI-Extension-Worker.ps1 -SelfTest
       - name: Build patch
         shell: powershell
         run: ./Build-Patch.ps1
