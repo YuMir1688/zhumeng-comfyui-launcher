@@ -19,6 +19,12 @@ spec.loader.exec_module(runtime)
 
 @unittest.skipUnless(os.name == "nt", "Windows NUL tests")
 class RuntimeTests(unittest.TestCase):
+    def test_diagnostic_survives_english_windows_encoding(self):
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+        with contextlib.redirect_stdout(stream):
+            runtime.report("[LAUNCHER:E_NULL_DEVICE] 中文诊断")
+        self.assertIn(b"E_NULL_DEVICE", stream.buffer.getvalue())
+
     def test_normal_null(self):
         original = os.devnull
         self.assertFalse(runtime.prepare_null())
@@ -68,7 +74,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_relocated_chinese_space_path_preserves_arguments(self):
         with tempfile.TemporaryDirectory(prefix="启动 中文 路径 ") as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             (root / "tools").mkdir()
             shutil.copy2(SOURCE, root / "tools/ComfyUI-Runtime.py")
             (root / "user").mkdir()

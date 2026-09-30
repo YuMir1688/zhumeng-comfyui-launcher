@@ -5,6 +5,15 @@ import sys
 from pathlib import Path
 
 
+def report(message):
+    # English Windows may redirect stdout as cp1252. Diagnostics must not crash
+    # the very failure path they describe. WPF normally provides UTF-8 already.
+    try:
+        print(message, flush=True)
+    except UnicodeEncodeError:
+        print(message.encode("ascii", errors="backslashreplace").decode("ascii"), flush=True)
+
+
 def probe_null(path):
     # No O_CREAT: a failed device lookup must never create a pretend null file.
     fd = os.open(path, os.O_RDWR | getattr(os, "O_BINARY", 0))
@@ -35,9 +44,9 @@ def null_service_diagnostic():
                                 timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
         import locale
         output = (result.stdout + result.stderr).decode(locale.getpreferredencoding(False), errors="replace")
-        print(f"[LAUNCHER:NULL_SERVICE] query_exit={result.returncode}\n{output.strip()}", flush=True)
+        report(f"[LAUNCHER:NULL_SERVICE] query_exit={result.returncode}\n{output.strip()}")
     except (OSError, subprocess.TimeoutExpired) as error:
-        print(f"[LAUNCHER:NULL_SERVICE] query_failed={error!r}", flush=True)
+        report(f"[LAUNCHER:NULL_SERVICE] query_failed={error!r}")
 
 
 def prepare_null(probe=probe_null):
@@ -49,16 +58,16 @@ def prepare_null(probe=probe_null):
             try:
                 probe(r"\\.\NUL")
             except OSError as second:
-                print(f"[LAUNCHER:E_NULL_DEVICE] nul={first!r}; device={second!r}", flush=True)
+                report(f"[LAUNCHER:E_NULL_DEVICE] nul={first!r}; device={second!r}")
             else:
                 # Local to this process; does not repair Windows or child interpreters.
                 os.devnull = r"\\.\NUL"
-                print("[LAUNCHER:W_NULL_ALIAS] 已验证系统 NUL 设备可用；本次 ComfyUI 进程改用设备完整路径。子进程不保证继承此兼容处理。", flush=True)
+                report("[LAUNCHER:W_NULL_ALIAS] 已验证系统 NUL 设备可用；本次 ComfyUI 进程改用设备完整路径。子进程不保证继承此兼容处理。")
                 return True
         else:
-            print(f"[LAUNCHER:E_NULL_DEVICE] {first!r}", flush=True)
+            report(f"[LAUNCHER:E_NULL_DEVICE] {first!r}")
         null_service_diagnostic()
-        print("Windows 空设备 NUL 无法读写，已在加载插件前停止。不能据此判定为缺少 pip、模型或显卡驱动。启动器未修改系统服务或安全设置。", flush=True)
+        report("Windows 空设备 NUL 无法读写，已在加载插件前停止。不能据此判定为缺少 pip、模型或显卡驱动。启动器未修改系统服务或安全设置。")
         raise SystemExit(73)
 
 
@@ -94,7 +103,7 @@ def main():
     root = Path(__file__).resolve().parent.parent
     entry = root / "main.py"
     if not entry.is_file():
-        print("[LAUNCHER:E_PACKAGE] 缺少 main.py，请将补丁放在完整整合包内。", flush=True)
+        report("[LAUNCHER:E_PACKAGE] 缺少 main.py，请将补丁放在完整整合包内。")
         return 75
     # Some transfer/extraction tools omit empty directories. Only create missing
     # runtime folders; never replace a file, remove data, or touch model folders.
@@ -102,7 +111,7 @@ def main():
         for name in ("input", "output", "temp", "user"):
             (root / name).mkdir(exist_ok=True)
     except OSError as error:
-        print(f"[LAUNCHER:E_PACKAGE] 无法准备运行目录，请检查解压位置和写入权限：{error}", flush=True)
+        report(f"[LAUNCHER:E_PACKAGE] 无法准备运行目录，请检查解压位置和写入权限：{error}")
         return 75
     os.chdir(root)
     sys.path[0] = str(root)
