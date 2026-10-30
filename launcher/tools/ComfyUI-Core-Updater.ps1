@@ -902,13 +902,13 @@ function Test-ComfyUIProcessRunning {
             if ($commandLine.IndexOf(
                 $normalizedRoot,
                 [System.StringComparison]::OrdinalIgnoreCase
-            ) -ge 0 -and $commandLine -match "(?i)main\.py") {
+            ) -ge 0 -and $commandLine -match '(?i)(?:main\.py|ComfyUI-Runtime\.py)') {
                 return $true
             }
         }
     }
     catch {
-        Write-UpdateLog ("进程检查警告：" + $_.Exception.Message)
+        throw ("Cannot verify ComfyUI has stopped; update cancelled: " + $_.Exception.Message)
     }
     return $false
 }
@@ -1093,21 +1093,10 @@ function Get-SafeRequirementMigrationPlan {
             "请等待整合包维护版更新。"
         )
     }
-    if ($baseline.Packages.Count -ne $target.Packages.Count) {
-        throw (
-            "目标版本新增或删除了 Python 依赖，无法保证完整回滚。" +
-            "请等待整合包维护版更新。"
-        )
-    }
-
     $changes = New-Object System.Collections.Generic.List[object]
-    foreach ($name in @($baseline.Packages.Keys | Sort-Object)) {
-        if (-not $target.Packages.ContainsKey($name)) {
-            throw (
-                "目标版本新增或删除了 Python 依赖，无法保证完整回滚。" +
-                "请等待整合包维护版更新。"
-            )
-        }
+    # Removed declarations never imply uninstalling shared plugin dependencies.
+    $removed = @($baseline.Packages.Keys | Where-Object { -not $target.Packages.ContainsKey($_) })
+    foreach ($name in @($target.Packages.Keys | Sort-Object)) {
         $oldLine = [string]$baseline.Packages[$name]
         $newLine = [string]$target.Packages[$name]
         if ($oldLine.Equals(
@@ -1123,8 +1112,7 @@ function Get-SafeRequirementMigrationPlan {
         if ($newLine -match '@|;|https?://') {
             throw "依赖 $name 使用了暂不支持自动迁移的来源或条件表达式。"
         }
-        if (-not ($name.StartsWith("comfyui-") -or
-            $name.StartsWith("comfy-") -or $name -eq "av")) {
+        if ($name -in @(Get-ProtectedPythonRuntimePackageNames)) {
             throw (
                 "目标版本需要调整底层运行依赖 $name。" +
                 "为保护显卡与 Python 环境，请等待整合包维护版更新。"
@@ -1141,6 +1129,7 @@ function Get-SafeRequirementMigrationPlan {
     return [pscustomobject]@{
         Count = $changes.Count
         Changes = $changes.ToArray()
+        RetainedRemovedPackages = $removed
     }
 }
 
@@ -1353,7 +1342,8 @@ function New-DependencyRepairTransactionPlan {
         if (-not $seen.Add($name)) {
             continue
         }
-        if ($protectedPackages.Contains($name)) {
+        if ($protectedPackages.Contains($name) -or $name.StartsWith('nvidia-') -or
+            $name.StartsWith('triton-')) {
             throw (
                 "依赖修复需要改动显卡运行时包 $name。" +
                 "为避免破坏内置 CUDA 环境，请获取整合包维护版。"
@@ -1395,10 +1385,11 @@ function Assert-PreparedDependencyWheelSet {
         -not [System.IO.File]::Exists($ManifestPath)) {
         throw "依赖修复离线材料不完整：$SetName"
     }
-    $manifestItems = @(
+    # PS 5.1 emits a JSON array as one pipeline object. Unwrap before filtering.
+    $manifestItems = @((
         [System.IO.File]::ReadAllText($ManifestPath, $script:utf8) |
         ConvertFrom-Json
-    )
+    ))
     $expectedItems = @(
         $manifestItems | Where-Object { [string]$_.set -eq $SetName }
     )
@@ -1457,6 +1448,7 @@ function Invoke-DependencyRepairPreflight {
             "--disable-pip-version-check",
             "--no-input",
             "--prefer-binary",
+            "--only-binary", ":all:",
             "--upgrade-strategy", "only-if-needed",
             "--retries", "2",
             "--timeout", "15",
@@ -1467,7 +1459,7 @@ function Invoke-DependencyRepairPreflight {
         ) `
         -WorkingDirectory ([System.IO.Path]::GetDirectoryName($RequirementsPath)) `
         -Environment $environment `
-        -TimeoutSeconds 300 `
+        -TimeoutSeconds 900 `
         -StatusStage "dependencies" `
         -StatusMessage $statusMessage `
         -FailureLabel "依赖修复预检失败")
@@ -1646,6 +1638,14 @@ function Invoke-DependencyRepairRollback {
             throw "依赖回滚校验失败：本次新增包 $name 仍然存在。"
         }
     }
+    foreach ($pin in @(Get-RequirementLines -Path $rollbackRequirementsPath)) {
+        if ($pin -notmatch '^([A-Za-z0-9._-]+)==(.+)$') { throw "Invalid rollback pin: $pin" }
+        $name = Normalize-PythonPackageName $Matches[1]
+        $version = $Matches[2]
+        if (-not $installed.ContainsKey($name) -or [string]$installed[$name].Version -cne $version) {
+            throw "Rollback version verification failed: $name"
+        }
+    }
     $script:rollbackPerformed = $true
     Write-UpdateLog "依赖修复失败后的自动回滚已完成并通过版本校验。"
 }
@@ -1660,202 +1660,12 @@ function Invoke-DependencyMigrationPreflight {
         [Parameter(Mandatory = $true)][string]$StageRoot
     )
 
-    if (-not (Test-HttpUrl $IndexUrl)) {
-        throw "PyPI 镜像地址无效。"
-    }
-    $installPlan = New-RequirementInstallPlan `
-        -RequirementsPath $TargetRequirementsPath `
-        -BaselineRequirementsPath $BaselineRequirementsPath
-    if ([int]$installPlan.Count -eq 0) {
-        return [pscustomobject]@{
-            Count = 0
-            TargetRequirementsPath = ""
-            TargetWheelDirectory = ""
-            RollbackRequirementsPath = ""
-            RollbackWheelDirectory = ""
-        }
-    }
-    if (-not [System.IO.Directory]::Exists($StageRoot)) {
-        [void][System.IO.Directory]::CreateDirectory($StageRoot)
-    }
-
-    $cacheDirectory = Join-Path $StageRoot "pip-cache"
-    $environment = Get-PipProcessEnvironment `
-        -Request $Request `
-        -CacheDirectory $cacheDirectory
-    $reportPath = Join-Path $StageRoot "target-report.json"
-    $statusMessage = "正在解析目标依赖并准备离线迁移"
-    Publish-Status -Stage "dependencies" -Message ($statusMessage + "…")
-    $dryRunArguments = @(
-        "-s", "-m", "pip", "install",
-        "--disable-pip-version-check",
-        "--no-input",
-        "--prefer-binary",
-        "--upgrade-strategy", "only-if-needed",
-        "--retries", "3",
-        "--timeout", "30",
-        "--index-url", $IndexUrl,
-        "--dry-run",
-        "--report", $reportPath,
-        "-r", [string]$installPlan.Path
-    )
-    [void](Invoke-CheckedPythonCommand `
-        -PythonPath $PythonPath `
-        -Arguments $dryRunArguments `
-        -WorkingDirectory ([System.IO.Path]::GetDirectoryName(
-            $TargetRequirementsPath
-        )) `
-        -Environment $environment `
-        -TimeoutSeconds 900 `
-        -StatusStage "dependencies" `
-        -StatusMessage $statusMessage `
-        -FailureLabel "目标依赖预检失败")
-
-    if (-not [System.IO.File]::Exists($reportPath)) {
-        throw "目标依赖预检没有生成安装报告。"
-    }
-    $report = (
-        [System.IO.File]::ReadAllText($reportPath, $script:utf8) |
-        ConvertFrom-Json
-    )
-    $installItems = @($report.install)
-    if ($installItems.Count -eq 0) {
-        Write-UpdateLog "目标依赖版本已安装，无需修改内置 Python 环境。"
-        return [pscustomobject]@{
-            Count = 0
-            TargetRequirementsPath = ""
-            TargetWheelDirectory = ""
-            RollbackRequirementsPath = ""
-            RollbackWheelDirectory = ""
-        }
-    }
-
-    $installed = Get-InstalledPythonPackageMap -PythonPath $PythonPath
-    $targetPins = New-Object System.Collections.Generic.List[string]
-    $rollbackPins = New-Object System.Collections.Generic.List[string]
-    $seen = New-Object 'System.Collections.Generic.HashSet[string]' (
-        [System.StringComparer]::OrdinalIgnoreCase
-    )
-    foreach ($item in $installItems) {
-        $displayName = [string]$item.metadata.name
-        $targetVersion = [string]$item.metadata.version
-        if ($displayName -notmatch "^[A-Za-z0-9][A-Za-z0-9._-]*$" -or
-            $targetVersion -notmatch "^[A-Za-z0-9][A-Za-z0-9._+!-]*$") {
-            throw "目标依赖报告包含无法安全处理的包版本。"
-        }
-        $name = Normalize-PythonPackageName -Name $displayName
-        if (-not ($name.StartsWith("comfyui-") -or
-            $name.StartsWith("comfy-") -or $name -eq "av")) {
-            throw (
-                "目标依赖会连带修改底层运行包 $name。" +
-                "为保护显卡与 Python 环境，请等待整合包维护版更新。"
-            )
-        }
-        if (-not $installed.ContainsKey($name)) {
-            throw (
-                "目标依赖需要新增 Python 包 $name，无法保证完整回滚。" +
-                "请等待整合包维护版更新。"
-            )
-        }
-        if (-not $seen.Add($name)) {
-            continue
-        }
-        $targetPins.Add($displayName + "==" + $targetVersion)
-        $rollbackPins.Add(
-            ([string]$installed[$name].Name) + "==" +
-            ([string]$installed[$name].Version)
-        )
-    }
-
-    $targetPinPath = Join-Path $StageRoot "target-pins.txt"
-    $rollbackPinPath = Join-Path $StageRoot "rollback-pins.txt"
-    [System.IO.File]::WriteAllLines(
-        $targetPinPath,
-        $targetPins.ToArray(),
-        $script:utf8
-    )
-    [System.IO.File]::WriteAllLines(
-        $rollbackPinPath,
-        $rollbackPins.ToArray(),
-        $script:utf8
-    )
-    $targetWheelDirectory = Join-Path $StageRoot "target-wheels"
-    $rollbackWheelDirectory = Join-Path $StageRoot "rollback-wheels"
-    foreach ($path in @($targetWheelDirectory, $rollbackWheelDirectory)) {
-        [void][System.IO.Directory]::CreateDirectory($path)
-    }
-
-    $downloadBase = @(
-        "-s", "-m", "pip", "download",
-        "--disable-pip-version-check",
-        "--no-input",
-        "--prefer-binary",
-        "--only-binary", ":all:",
-        "--no-deps",
-        "--retries", "3",
-        "--timeout", "30",
-        "--index-url", $IndexUrl
-    )
-    $targetDownloadArguments = @($downloadBase) + @(
-        "--dest", $targetWheelDirectory
-    ) + @($targetPins)
-    [void](Invoke-CheckedPythonCommand `
-        -PythonPath $PythonPath `
-        -Arguments $targetDownloadArguments `
-        -WorkingDirectory $StageRoot `
-        -Environment $environment `
-        -TimeoutSeconds 900 `
-        -StatusStage "dependencies" `
-        -StatusMessage "正在缓存目标版本依赖" `
-        -FailureLabel "目标依赖缓存失败")
-
-    $rollbackDownloadArguments = @($downloadBase) + @(
-        "--dest", $rollbackWheelDirectory
-    ) + @($rollbackPins)
-    [void](Invoke-CheckedPythonCommand `
-        -PythonPath $PythonPath `
-        -Arguments $rollbackDownloadArguments `
-        -WorkingDirectory $StageRoot `
-        -Environment $environment `
-        -TimeoutSeconds 900 `
-        -StatusStage "dependencies" `
-        -StatusMessage "正在缓存回滚依赖" `
-        -FailureLabel "回滚依赖缓存失败")
-
-    $wheelManifest = foreach ($set in @(
-        [pscustomobject]@{
-            Name = "target"
-            Directory = $targetWheelDirectory
-        },
-        [pscustomobject]@{
-            Name = "rollback"
-            Directory = $rollbackWheelDirectory
-        }
-    )) {
-        foreach ($file in Get-ChildItem -LiteralPath $set.Directory -File) {
-            [pscustomobject]@{
-                set = $set.Name
-                file = $file.Name
-                sha256 = (
-                    Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
-                ).Hash.ToLowerInvariant()
-            }
-        }
-    }
-    Write-Utf8Atomic `
-        -Path (Join-Path $StageRoot "wheel-manifest.json") `
-        -Text ($wheelManifest | ConvertTo-Json -Depth 4)
-    Write-UpdateLog (
-        "依赖事务已准备：{0} 个发行包，目标与回滚 wheel 均已缓存。" -f
-        $targetPins.Count
-    )
-    return [pscustomobject]@{
-        Count = $targetPins.Count
-        TargetRequirementsPath = $targetPinPath
-        TargetWheelDirectory = $targetWheelDirectory
-        RollbackRequirementsPath = $rollbackPinPath
-        RollbackWheelDirectory = $rollbackWheelDirectory
-    }
+    # Validate declarations, but resolve against the complete target requirements.
+    # Reuse the transaction engine that records additions and caches old wheels.
+    [void](Get-SafeRequirementMigrationPlan $BaselineRequirementsPath $TargetRequirementsPath)
+    return Invoke-DependencyRepairPreflight -PythonPath $PythonPath `
+        -RequirementsPath $TargetRequirementsPath -IndexUrl $IndexUrl `
+        -Request $Request -StageRoot $StageRoot
 }
 
 function Invoke-PreparedDependencySet {
@@ -2533,6 +2343,10 @@ function Invoke-UpdaterSelfTest {
             $script:utf8
         )
         $repairWheelManifestPath = Join-Path $repairWheelRoot "manifest.json"
+        $secondWheelPath = Join-Path $repairTargetWheels 'package-b.whl'
+        $oldWheelPath = Join-Path $repairRollbackWheels 'package-a-old.whl'
+        [IO.File]::WriteAllText($secondWheelPath, 'second-wheel', $script:utf8)
+        [IO.File]::WriteAllText($oldWheelPath, 'old-wheel', $script:utf8)
         Write-Utf8Atomic `
             -Path $repairWheelManifestPath `
             -Text (@(
@@ -2544,6 +2358,14 @@ function Invoke-UpdaterSelfTest {
                             -LiteralPath $repairWheelPath `
                             -Algorithm SHA256
                     ).Hash.ToLowerInvariant()
+                }
+                [pscustomobject]@{
+                    set = 'target'; file = 'package-b.whl'
+                    sha256 = (Get-FileHash -LiteralPath $secondWheelPath).Hash
+                }
+                [pscustomobject]@{
+                    set = 'rollback'; file = 'package-a-old.whl'
+                    sha256 = (Get-FileHash -LiteralPath $oldWheelPath).Hash
                 }
             ) | ConvertTo-Json -Depth 4)
         Assert-PreparedDependencyWheelSet `
@@ -2645,17 +2467,15 @@ function Invoke-UpdaterSelfTest {
             ),
             $script:utf8
         )
-        $packageSetChangeBlocked = $false
-        try {
-            [void](Get-SafeRequirementMigrationPlan `
-                -BaselineRequirementsPath $safeOldRequirements `
-                -TargetRequirementsPath $safeNewRequirements)
+        $addedPlan = Get-SafeRequirementMigrationPlan $safeOldRequirements $safeNewRequirements
+        if ($addedPlan.Count -ne 1 -or $addedPlan.Changes[0].Name -ne 'comfyui-new-package') {
+            throw 'Added requirement planning failed'
         }
-        catch {
-            $packageSetChangeBlocked = $true
-        }
-        if (-not $packageSetChangeBlocked) {
-            throw "依赖新增删除拦截测试失败。"
+        [IO.File]::WriteAllLines($safeOldRequirements, @('torchaudio', 'Pillow'), $script:utf8)
+        [IO.File]::WriteAllLines($safeNewRequirements, @('Pillow>=10.1.0'), $script:utf8)
+        $removedPlan = Get-SafeRequirementMigrationPlan $safeOldRequirements $safeNewRequirements
+        if ($removedPlan.Count -ne 1 -or $removedPlan.RetainedRemovedPackages -notcontains 'torchaudio') {
+            throw 'Removed shared dependency retention failed'
         }
 
         foreach ($directoryName in Get-CoreDirectoryNames) {
@@ -3001,6 +2821,12 @@ try {
         )
     }
 
+    if ($null -ne $dependencyMigration -and [int]$dependencyMigration.Count -gt 0) {
+        Assert-PreparedDependencyWheelSet -Directory $dependencyMigration.TargetWheelDirectory `
+            -ManifestPath $dependencyMigration.WheelManifestPath -SetName target
+        Assert-PreparedDependencyWheelSet -Directory $dependencyMigration.RollbackWheelDirectory `
+            -ManifestPath $dependencyMigration.WheelManifestPath -SetName rollback
+    }
     Publish-Status -Stage "backup" -Message "正在创建上一版本核心备份…"
     $backupName = "core-{0}-{1}" -f (
         $currentVersion,
@@ -3097,15 +2923,7 @@ catch {
         [int]$dependencyMigration.Count -gt 0) {
         try {
             Publish-Status -Stage "rollback" -Message "正在恢复上一版本依赖…"
-            Invoke-PreparedDependencySet `
-                -PythonPath $pythonPath `
-                -RequirementsPath (
-                    [string]$dependencyMigration.RollbackRequirementsPath
-                ) `
-                -WheelDirectory (
-                    [string]$dependencyMigration.RollbackWheelDirectory
-                ) `
-                -StatusMessage "正在恢复上一版本依赖"
+            Invoke-DependencyRepairRollback -PythonPath $pythonPath -Transaction $dependencyMigration
             Invoke-PortableEntrypointRepair -Root $root
         }
         catch {
